@@ -1,0 +1,4 @@
+echo "*.h5" >> .gitignore
+echo "*.npy" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo "asl_dataset/" >> .gitignore
