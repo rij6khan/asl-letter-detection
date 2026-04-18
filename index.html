@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SignMaster AI | Real-time ASL</title>
+    <script src="https://cdn.tailwindcss.com/3.4.1"></script>
+    <script src="https://unpkg.com/lucide@0.321.0/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --neon: #00f5c4;
+            --neon2: #7c3aed;
+            --bg: #080c14;
+            --card: #0d1424;
+            --border: rgba(255,255,255,0.07);
+        }
+
+        * { box-sizing: border-box; }
+        body { background: var(--bg); color: #fff; font-family: 'Space Mono', monospace; min-height: 100vh; }
+        h1, h2, .display { font-family: 'Syne', sans-serif; }
+
+        .view { display: none; }
+        .view.active { display: block; }
+
+        /* Video */
+        #video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            overflow: hidden;
+            border-radius: 1.5rem;
+            background: #000;
+            border: 1px solid var(--border);
+            box-shadow: 0 0 60px rgba(0,245,196,0.08);
+        }
+        #webcam { transform: rotateY(180deg); width: 100%; height: auto; display: block; }
+        #output_canvas {
+            position: absolute; left: 0; top: 0;
+            width: 100%; height: 100%;
+            transform: rotateY(180deg);
+        }
+        .hud-overlay {
+            position: absolute; inset: 0;
+            pointer-events: none;
+            display: flex; flex-direction: column;
+            justify-content: space-between;
+            padding: 1.2rem;
+        }
+
+        /* Hold ring */
+        #hold-ring-wrap {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        #hold-ring-svg { width: 160px; height: 160px; display: none; }
+        #hold-ring-circle {
+            fill: none;
+            stroke: var(--neon);
+            stroke-width: 6;
+            stroke-linecap: round;
+            stroke-dasharray: 440;
+            stroke-dashoffset: 440;
+            transform: rotate(-90deg);
+            transform-origin: center;
+            transition: stroke-dashoffset 0.1s linear;
+            filter: drop-shadow(0 0 8px var(--neon));
+        }
+
+        /* Letter display */
+        .letter-box {
+            background: rgba(0,0,0,0.55);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0,245,196,0.2);
+            border-radius: 1rem;
+            padding: 0.6rem 1rem;
+        }
+
+        /* Score pill */
+        .score-pill {
+            background: rgba(0,0,0,0.55);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 0.4rem 1rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            display: flex; align-items: center; gap: 0.4rem;
+        }
+
+        /* Confidence bar */
+        #conf-bar-track {
+            width: 100%; background: rgba(255,255,255,0.08);
+            height: 5px; border-radius: 999px; overflow: hidden;
+        }
+        #conf-bar {
+            background: linear-gradient(90deg, var(--neon2), var(--neon));
+            height: 100%; width: 0%;
+            transition: width 0.2s ease;
+            box-shadow: 0 0 10px var(--neon);
+        }
+
+        /* Letter strip */
+        .letter-strip {
+            display: flex; gap: 6px; overflow-x: auto; padding: 4px;
+        }
+        .letter-chip {
+            min-width: 32px; height: 32px;
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.75rem;
+            border: 1px solid var(--border);
+            background: var(--card);
+            flex-shrink: 0;
+            transition: all 0.3s;
+            user-select: none;        /* ADD — prevents text selection on click */
+        }
+
+        /* ADD this new rule below .letter-chip */
+        .letter-chip:hover {
+            border-color: var(--neon);
+            color: var(--neon);
+            transform: scale(1.1);
+        }
+        .letter-chip.done    { background: var(--neon); color: #000; border-color: var(--neon); }
+        .letter-chip.current { border-color: var(--neon); color: var(--neon); box-shadow: 0 0 10px rgba(0,245,196,0.3); }
+
+        /* Dashboard cards */
+        .stat-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 1.25rem;
+            padding: 1.5rem;
+        }
+
+        /* API status dot */
+        .api-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block; margin-right: 6px;
+        }
+        .api-dot.ok      { background: var(--neon); box-shadow: 0 0 6px var(--neon); }
+        .api-dot.error   { background: #f87171; }
+        .api-dot.loading { background: #fbbf24; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+        /* Success flash */
+        @keyframes flashGreen {
+            0%   { box-shadow: 0 0 0 0 rgba(0,245,196,0); }
+            50%  { box-shadow: 0 0 40px 20px rgba(0,245,196,0.3); }
+            100% { box-shadow: 0 0 0 0 rgba(0,245,196,0); }
+        }
+        .flash-success { animation: flashGreen 0.6s ease; }
+
+        /* Neon btn */
+        .btn-neon {
+            background: var(--neon);
+            color: #000;
+            font-weight: 700;
+            font-family: 'Space Mono', monospace;
+            border-radius: 0.75rem;
+            padding: 0.75rem 2rem;
+            font-size: 0.85rem;
+            letter-spacing: 0.05em;
+            border: none; cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+        .btn-neon:hover { opacity: 0.85; transform: translateY(-1px); }
+
+        .btn-ghost {
+            background: transparent;
+            color: rgba(255,255,255,0.5);
+            font-family: 'Space Mono', monospace;
+            font-size: 0.8rem;
+            border: none; cursor: pointer;
+            transition: color 0.2s;
+        }
+        .btn-ghost:hover { color: #fff; }
+
+        /* Nav */
+        nav {
+            position: fixed; top: 0; width: 100%;
+            background: rgba(8,12,20,0.8);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border);
+            z-index: 50;
+        }
+
+        .hero-gradient {
+            background: linear-gradient(135deg, #0d1424 0%, #12102a 100%);
+            border: 1px solid var(--border);
+            border-radius: 1.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero-gradient::before {
+            content: '';
+            position: absolute;
+            width: 300px; height: 300px;
+            background: radial-gradient(circle, rgba(0,245,196,0.12) 0%, transparent 70%);
+            top: -50px; right: -50px;
+            border-radius: 50%;
+        }
+
+        /* Scrollbar */
+        .letter-strip::-webkit-scrollbar { height: 4px; }
+        .letter-strip::-webkit-scrollbar-track { background: transparent; }
+        .letter-strip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <!-- Nav -->
+    <nav>
+        <div class="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <div style="background:var(--neon2)" class="p-1.5 rounded-lg">
+                    <i data-lucide="hand" class="w-4 h-4"></i>
+                </div>
+                <span class="font-bold text-lg" style="font-family:'Syne',sans-serif;">SignMaster <span style="color:var(--neon)">AI</span></span>
+            </div>
+            <div class="flex gap-4 items-center">
+                <button onclick="router.navigate('home')" class="btn-ghost">Home</button>
+                <button onclick="router.navigate('ai-mode')" class="btn-neon" style="padding:0.5rem 1.2rem">Try AI Mode</button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-4xl mx-auto p-6 pt-24 pb-16">
+
+        <!-- HOME -->
+        <section id="home" class="view active">
+            <div class="hero-gradient p-8 mb-8">
+                <p class="text-xs font-bold mb-2" style="color:var(--neon);letter-spacing:0.15em">ASL TRAINER</p>
+                <h1 class="text-4xl font-black mb-3">Master the<br>Alphabet.</h1>
+                <p style="color:rgba(255,255,255,0.5);font-size:0.85rem" class="mb-6">
+                    Real-time AI feedback. Hold the correct sign for 2 seconds to advance.
+                </p>
+                <button onclick="router.navigate('ai-mode')" class="btn-neon flex items-center gap-2">
+                    <i data-lucide="camera" class="w-4 h-4"></i> Launch AI Tutor
+                </button>
+            </div>
+
+            <div class="grid grid-cols-3 gap-4 mb-8">
+                <div class="stat-card">
+                    <p style="color:rgba(255,255,255,0.4);font-size:0.7rem;letter-spacing:0.1em" class="mb-1">SCORE</p>
+                    <p class="text-2xl font-bold" id="home-score">0</p>
+                </div>
+                <div class="stat-card">
+                    <p style="color:rgba(255,255,255,0.4);font-size:0.7rem;letter-spacing:0.1em" class="mb-1">LETTERS</p>
+                    <p class="text-2xl font-bold" id="home-letters">0 / 24</p>
+                </div>
+                <div class="stat-card">
+                    <p style="color:rgba(255,255,255,0.4);font-size:0.7rem;letter-spacing:0.1em" class="mb-1">ACCURACY</p>
+                    <p class="text-2xl font-bold" id="home-accuracy">–</p>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <p style="color:rgba(255,255,255,0.4);font-size:0.7rem;letter-spacing:0.1em" class="mb-3">PROGRESS</p>
+                <div class="letter-strip" id="home-strip"></div>
+            </div>
+        </section>
+
+        <!-- AI MODE -->
+        <section id="ai-mode" class="view">
+            <div class="flex items-center justify-between mb-5">
+                <div>
+                    <h2 class="text-2xl font-black" style="font-family:'Syne',sans-serif;">AI Tutor</h2>
+                    <p style="color:rgba(255,255,255,0.4);font-size:0.78rem" id="ai-status">
+                        <span class="api-dot loading" id="api-dot"></span>
+                        Connecting to AI server…
+                    </p>
+                </div>
+                <button onclick="router.navigate('home')" class="btn-ghost flex items-center gap-1">
+                    <i data-lucide="x" class="w-4 h-4"></i> Close
+                </button>
+            </div>
+
+            <!-- Letter strip -->
+            <div class="letter-strip mb-5" id="ai-strip"></div>
+
+            <div id="video-container" class="mx-auto shadow-2xl">
+                <video id="webcam" autoplay playsinline></video>
+                <canvas id="output_canvas"></canvas>
+
+                <!-- Hold ring -->
+                <div id="hold-ring-wrap">
+                    <svg id="hold-ring-svg" viewBox="0 0 160 160">
+                        <circle cx="80" cy="80" r="70" id="hold-ring-circle"/>
+                    </svg>
+                </div>
+
+                <!-- HUD -->
+                <div class="hud-overlay">
+                    <div class="flex justify-between items-start">
+                        <!-- Target -->
+                        <div class="letter-box">
+                            <p style="font-size:0.6rem;letter-spacing:0.12em;color:var(--neon)" class="font-bold mb-0.5">TARGET SIGN</p>
+                            <p class="text-5xl font-black" id="target-letter" style="font-family:'Syne',sans-serif;line-height:1">A</p>
+                        </div>
+                        <!-- Status + Score -->
+                        <div class="flex flex-col gap-2 items-end">
+                            <div class="letter-box text-right">
+                                <p style="font-size:0.6rem;letter-spacing:0.12em;color:rgba(255,255,255,0.4)" class="font-bold mb-0.5">AI SEES</p>
+                                <p style="font-size:0.75rem;font-weight:700" id="tracking-status" class="text-red-400">NO HAND</p>
+                            </div>
+                            <div class="score-pill">
+                                <i data-lucide="star" class="w-3 h-3" style="color:var(--neon)"></i>
+                                <span id="hud-score">0 pts</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bottom: Confidence -->
+                    <div>
+                        <div class="letter-box" style="max-width:320px;margin:0 auto">
+                            <div class="flex justify-between mb-1.5">
+                                <span style="font-size:0.65rem;letter-spacing:0.1em;font-weight:700">CONFIDENCE</span>
+                                <span style="font-size:0.65rem;font-weight:700;color:var(--neon)" id="conf-val">0%</span>
+                            </div>
+                            <div id="conf-bar-track"><div id="conf-bar"></div></div>
+                            <p style="font-size:0.7rem;text-align:center;margin-top:0.5rem;color:rgba(255,255,255,0.6)" id="ai-prompt">Position your hand in frame</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-5 flex justify-center gap-3">
+                <button id="camera-btn" class="btn-neon">Start Camera</button>
+            </div>
+
+            <!-- Success toast -->
+            <div id="success-toast" style="
+                display:none; position:fixed; top:80px; left:50%; transform:translateX(-50%);
+                background:var(--neon); color:#000; font-weight:700; font-size:0.85rem;
+                padding:0.6rem 1.5rem; border-radius:999px; z-index:999;
+                font-family:'Space Mono',monospace; white-space:nowrap;
+            "></div>
+        </section>
+    </main>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════════
+
+// Standard static ASL letters (J and Z need motion, skipped here)
+const LETTERS    = 'ABCDEFGHIKLMNOPQRSTUVWXY'.split('');
+const HOLD_MS    = 2000;   // hold for 2 seconds to confirm a letter
+const THRESHOLD  = 0.45;   // 45% confidence minimum to start hold timer
+const API_URL    = 'http://localhost:5000/predict';  // our Python server
+const PREDICT_INTERVAL_MS = 300;  // call API max every 300ms (≈3x per second)
+
+// ═══════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════
+const state = {
+    letterIndex: 0,      // which letter we're currently on (index into LETTERS)
+    score:       0,      // total score
+    completed:   new Set(),  // set of letters the user has completed
+    attempts:    0,      // total prediction attempts
+    holdStart:   null,   // timestamp when we started holding a correct sign
+    holding:     false,  // are we currently in a hold?
+};
+
+// API call throttle variables
+let lastPredictTime = 0;   // timestamp of last API call
+let isPredicting    = false; // is an API call in progress?
+let serverOnline    = false; // is the Flask server reachable?
+
+// ═══════════════════════════════════════════════════════════
+//  ROUTER
+// ═══════════════════════════════════════════════════════════
+const router = {
+    navigate(id) {
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        document.getElementById(id).classList.add('active');
+        if (id === 'ai-mode') app.initAI();
+        if (id === 'home')    updateHomeStats();
+        lucide.createIcons();
+    }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  UI HELPERS
+// ═══════════════════════════════════════════════════════════
+// ✅ NEW — chips are clickable in AI strip
+function buildStrip(containerId) {
+    const el = document.getElementById(containerId);
+    el.innerHTML = '';
+    LETTERS.forEach((l, i) => {
+        const chip = document.createElement('div');
+        chip.className   = 'letter-chip';
+        chip.id          = `chip-${containerId}-${l}`;
+        chip.textContent = l;
+
+        if (state.completed.has(l))       chip.classList.add('done');
+        else if (i === state.letterIndex) chip.classList.add('current');
+
+        // ✅ Only AI strip chips are clickable (not home strip)
+        if (containerId === 'ai-strip') {
+            chip.style.cursor = 'pointer';
+            chip.title        = `Practice letter ${l}`;
+            chip.onclick      = () => jumpToLetter(i);
+        }
+
+        el.appendChild(chip);
+    });
+}
+
+// ✅ NEW — jump to any letter when chip is clicked
+function jumpToLetter(index) {
+    // Reset hold timer so it doesn't carry over
+    state.letterIndex = index;
+    state.holdStart   = null;
+    state.holding     = false;
+
+    // Reset the confidence bar and ring
+    setConfidence(0);
+    setHoldRing(0);
+
+    // Update the big TARGET SIGN letter on screen
+    const letter = LETTERS[index];
+    document.getElementById('target-letter').textContent = letter;
+    document.getElementById('ai-prompt').textContent     = `Show the sign for "${letter}"`;
+    document.getElementById('ai-prompt').style.color     = 'rgba(255,255,255,0.6)';
+
+    // Rebuild strips so the clicked chip highlights as current
+    updateStrips();
+
+    console.log(`Jumped to letter: ${letter}`);
+}
+
+
+function updateStrips() {
+    buildStrip('ai-strip');
+    buildStrip('home-strip');
+}
+
+function updateHomeStats() {
+    document.getElementById('home-score').textContent   = state.score;
+    document.getElementById('home-letters').textContent = `${state.completed.size} / ${LETTERS.length}`;
+    const acc = state.attempts > 0
+        ? Math.round((state.completed.size / state.attempts) * 100) + '%'
+        : '–';
+    document.getElementById('home-accuracy').textContent = acc;
+    buildStrip('home-strip');
+}
+
+function setConfidence(val) {
+    document.getElementById('conf-bar').style.width  = val + '%';
+    document.getElementById('conf-val').textContent  = val + '%';
+}
+
+function showToast(msg) {
+    const t = document.getElementById('success-toast');
+    t.textContent  = msg;
+    t.style.display = 'block';
+    setTimeout(() => { t.style.display = 'none'; }, 1800);
+}
+
+function setHoldRing(fraction) {
+    const svg    = document.getElementById('hold-ring-svg');
+    const circle = document.getElementById('hold-ring-circle');
+    if (fraction <= 0) { svg.style.display = 'none'; return; }
+    svg.style.display = 'block';
+    circle.style.strokeDashoffset = 440 * (1 - fraction);
+}
+
+function setApiStatus(status) {
+    // status: 'loading' | 'ok' | 'error'
+    const dot = document.getElementById('api-dot');
+    const txt = document.getElementById('ai-status');
+    dot.className = `api-dot ${status}`;
+    if (status === 'ok')      txt.innerHTML = `<span class="api-dot ok"></span>AI Server Connected`;
+    if (status === 'error')   txt.innerHTML = `<span class="api-dot error"></span>Server offline — run: python server.py`;
+    if (status === 'loading') txt.innerHTML = `<span class="api-dot loading"></span>Connecting to AI server…`;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  AI PREDICTION — calls our Python Flask server
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Captures the current hand region from the webcam
+ * and sends it to the Python model for prediction.
+ *
+ * lm = array of 21 MediaPipe landmarks [{x, y, z}, ...]
+ *
+ * Returns: { letter: "A", confidence: 0.87, all: {...} }
+ *       or null if something went wrong
+ */
+async function predictFromServer(lm) {
+    const video = document.getElementById('webcam');
+    if (!video.videoWidth) return null;  // video not ready yet
+
+    // ── Step 1: Find the bounding box of the hand ──────────────
+    // MediaPipe gives us normalized coordinates (0.0 to 1.0)
+    // We find the min/max to get a tight box around the hand
+    const xs   = lm.map(p => p.x);
+    const ys   = lm.map(p => p.y);
+    const minX = Math.max(0,   Math.min(...xs) - 0.08);  // add 8% padding
+    const maxX = Math.min(1,   Math.max(...xs) + 0.08);
+    const minY = Math.max(0,   Math.min(...ys) - 0.08);
+    const maxY = Math.min(1,   Math.max(...ys) + 0.08);
+
+    // ── Step 2: Draw the hand region to a hidden canvas ────────
+    // We create a small 64x64 canvas to extract just the hand
+    const tempCanvas    = document.createElement('canvas');
+    tempCanvas.width    = 64;
+    tempCanvas.height   = 64;
+    const ctx           = tempCanvas.getContext('2d');
+
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+
+    // Source rectangle in the video (pixel coordinates)
+    // Note: video is mirrored with CSS but the actual pixel data is not,
+    // so we flip the x-axis when cropping
+    const sx = minX * vw;   // flip x because CSS mirrors the video
+    const sy = minY * vh;
+    const sw = (maxX - minX) * vw;
+    const sh = (maxY - minY) * vh;
+
+    // Draw the cropped hand region scaled to 64x64
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, 64, 64);
+
+    // ── Step 3: Convert canvas to base64 string ────────────────
+    // base64 is just a way to send image data as text in JSON
+    const base64Image = tempCanvas.toDataURL('image/jpeg', 0.85);
+
+    // ── Step 4: Send to our Python server ─────────────────────
+    try {
+        const response = await fetch(API_URL, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ image: base64Image })
+        });
+
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+
+        return data;
+        // data = { letter: "A", confidence: 0.87, all: {A:0.87, B:0.01, ...} }
+
+    } catch (err) {
+        // Server is offline or returned an error
+        serverOnline = false;
+        setApiStatus('error');
+        return null;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  APP
+// ═══════════════════════════════════════════════════════════
+const app = {
+    hands: null,
+    cameraActive: false,
+
+    // ── Check if Flask server is running ──────────────────────
+    async checkServer() {
+        try {
+            const res = await fetch('http://localhost:5000/health');
+            const data = await res.json();
+            if (data.status === 'ok') {
+                serverOnline = true;
+                setApiStatus('ok');
+                console.log(`AI Server online! ${data.classes} letter classes loaded.`);
+            }
+        } catch {
+            serverOnline = false;
+            setApiStatus('error');
+            console.warn('Flask server not running. Start it with: python server.py');
+        }
+    },
+
+    // ── Initialize the AI mode view ──────────────────────────
+    async initAI() {
+        updateStrips();
+        document.getElementById('target-letter').textContent = LETTERS[state.letterIndex];
+        document.getElementById('hud-score').textContent     = state.score + ' pts';
+
+        // Check if our Python server is running
+        await this.checkServer();
+
+        // Set up MediaPipe Hands (for drawing skeleton + getting landmarks)
+        if (this.hands) return;  // already initialized
+
+        this.hands = new Hands({
+            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+        });
+        this.hands.setOptions({
+            maxNumHands:            1,
+            modelComplexity:        1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence:  0.5
+        });
+        this.hands.onResults(results => app.onResults(results));
+
+        document.getElementById('camera-btn').onclick = () => this.startCamera();
+        lucide.createIcons();
+    },
+
+    // ── Start webcam ──────────────────────────────────────────
+    async startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const video  = document.getElementById('webcam');
+            video.srcObject = stream;
+            this.cameraActive = true;
+            document.getElementById('camera-btn').style.display = 'none';
+            this.renderLoop();
+        } catch {
+            alert('Camera access denied. Please allow camera access and try again.');
+        }
+    },
+
+    // ── Render loop — runs at ~30fps ──────────────────────────
+    async renderLoop() {
+        if (!this.cameraActive) return;
+        const video = document.getElementById('webcam');
+        await this.hands.send({ image: video });
+        requestAnimationFrame(() => this.renderLoop());
+    },
+
+    // ── Called by MediaPipe every frame with results ──────────
+    onResults(results) {
+        const canvas = document.getElementById('output_canvas');
+        const ctx    = canvas.getContext('2d');
+        canvas.width  = results.image.width;
+        canvas.height = results.image.height;
+        ctx.save();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            // Hand detected! Draw the skeleton overlay
+            for (const lm of results.multiHandLandmarks) {
+                // ✅ ADD THESE 3 LINES — update status right away, don't wait for API
+                document.getElementById('tracking-status').textContent   = '👁 SEEN';
+                document.getElementById('tracking-status').style.cssText = 
+                    'font-size:0.75rem;font-weight:700;color:rgba(255,255,255,0.6)';
+
+   
+                drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: '#00f5c4', lineWidth: 3 });
+                drawLandmarks(ctx, lm, { color: '#ffffff', lineWidth: 1, radius: 4 });
+
+                // Send to AI (throttled — not every single frame)
+                const now = Date.now();
+                if (!isPredicting && serverOnline && (now - lastPredictTime) > PREDICT_INTERVAL_MS) {
+                    lastPredictTime = now;
+                    this.processSign(lm);
+                    // Note: processSign is async but we don't await it here
+                    // This lets the render loop continue while the API call happens
+                }
+            }
+        } else {
+            // No hand detected
+            document.getElementById('tracking-status').textContent   = 'NO HAND';
+            document.getElementById('tracking-status').style.cssText = 'font-size:0.75rem;font-weight:700;color:#f87171';
+            setConfidence(0);
+            setHoldRing(0);
+            state.holdStart = null;
+            state.holding   = false;
+            document.getElementById('ai-prompt').textContent = 'Position your hand in frame';
+            document.getElementById('ai-prompt').style.color = 'rgba(255,255,255,0.6)';
+        }
+
+        ctx.restore();
+    },
+
+    // ── Process one sign prediction ───────────────────────────
+    async processSign(lm) {
+        if (state.letterIndex >= LETTERS.length) return;
+        isPredicting = true;
+
+        try {
+            // ✅ Define targetLetter FIRST before anything uses it
+            const targetLetter    = LETTERS[state.letterIndex];
+            const predictedLetter_placeholder = '...';
+
+            const result = await predictFromServer(lm);
+
+            // ✅ Single debug line — open F12 → Console to see this
+            if (result) console.log(`AI: ${result.letter} ${Math.round(result.confidence*100)}% | Target ${targetLetter}: ${Math.round((result.all?.[targetLetter]||0)*100)}%`);
+
+            if (!result) return;
+
+            const predictedLetter = result.letter;
+
+            // Update "AI SEES" label
+            document.getElementById('tracking-status').textContent   = predictedLetter;
+            document.getElementById('tracking-status').style.cssText =
+                'font-size:0.75rem;font-weight:700;color:var(--neon)';
+
+            // Get confidence for the TARGET letter
+            const targetConf = (result.all && targetLetter in result.all)
+                ? result.all[targetLetter]
+                : (predictedLetter === targetLetter ? result.confidence : 0);
+
+            const pct = Math.round(targetConf * 100);
+            setConfidence(pct);
+            state.attempts++;
+
+            // Hold timer logic
+            if (targetConf >= THRESHOLD) {
+                if (!state.holding) {
+                    state.holdStart = Date.now();
+                    state.holding   = true;
+                }
+                const elapsed  = Date.now() - state.holdStart;
+                const fraction = Math.min(elapsed / HOLD_MS, 1);
+                setHoldRing(fraction);
+                const remaining = Math.ceil((HOLD_MS - elapsed) / 1000);
+                document.getElementById('ai-prompt').textContent =
+                    fraction >= 1 ? '✓ Perfect!' : `Hold… ${remaining}s`;
+                document.getElementById('ai-prompt').style.color = 'var(--neon)';
+                if (fraction >= 1) this.advanceLetter(targetLetter);
+            } else {
+                state.holding   = false;
+                state.holdStart = null;
+                setHoldRing(0);
+                document.getElementById('ai-prompt').textContent =
+                    `Show the sign for "${targetLetter}"`;
+                document.getElementById('ai-prompt').style.color = 'rgba(255,255,255,0.6)';
+            }
+
+        } finally {
+            isPredicting = false;
+        }
+    },
+
+    // ── Advance to the next letter ────────────────────────────
+    advanceLetter(letter) {
+        state.completed.add(letter);
+        state.score  += 10;
+        state.holding  = false;
+        state.holdStart = null;
+        setHoldRing(0);
+
+        // Flash green on the video container
+        const container = document.getElementById('video-container');
+        container.classList.add('flash-success');
+        setTimeout(() => container.classList.remove('flash-success'), 600);
+
+        showToast(`✓ ${letter} — +10 pts!`);
+        document.getElementById('hud-score').textContent = state.score + ' pts';
+
+        state.letterIndex++;
+
+        if (state.letterIndex >= LETTERS.length) {
+            // All done!
+            document.getElementById('target-letter').textContent = '🎉';
+            document.getElementById('ai-prompt').textContent     = 'All letters done! Amazing work!';
+        } else {
+            const next = LETTERS[state.letterIndex];
+            document.getElementById('target-letter').textContent = next;
+            document.getElementById('ai-prompt').textContent     = `Next: Show "${next}"`;
+            document.getElementById('ai-prompt').style.color     = 'rgba(255,255,255,0.6)';
+        }
+
+        updateStrips();
+        lucide.createIcons();
+    }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════
+window.onload = () => {
+    lucide.createIcons();
+    buildStrip('home-strip');
+};
+</script>
+</body>
+</html>
