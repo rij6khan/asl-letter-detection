@@ -21,7 +21,7 @@ MODEL_PATH = 'model.pth'
 LANDMARK_MODEL = 'hand_landmarker.task'
 
 LETTERS = ['a','b','c','d','e','f','g','h','i','k','l','m',
-           'n','o','p','q','r','s','t','u','v','x','y']
+           'n','o','p','q','r','s','t','u','v','w','x','y']
 
 # ===============================
 # CNN MODEL (MUST MATCH NOTEBOOK)

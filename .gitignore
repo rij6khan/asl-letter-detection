@@ -1,4 +1,5 @@
-echo "*.h5" >> .gitignore
-echo "*.npy" >> .gitignore
-echo "__pycache__/" >> .gitignore
-echo "asl_dataset/" >> .gitignore
+*.h5
+*.npy
+__pycache__/
+asl_dataset/
+asl-env/
